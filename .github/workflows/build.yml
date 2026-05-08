@@ -38,7 +38,8 @@ jobs:
 
       - name: Build PDF documentation
         run: |
-          sudo apt-get install -y pandoc wkhtmltopdf xvfb
+          sudo apt-get update -qq
+          sudo apt-get install -y --fix-missing pandoc wkhtmltopdf xvfb
           mkdir -p ./build
           xvfb-run --auto-servernum \
             pandoc docs/Dokumentation.md \
