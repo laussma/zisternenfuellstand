@@ -29,10 +29,12 @@ jobs:
 
       - name: Compile Sketch
         run: |
+          mkdir -p ./sketch/Zisternenfuellstand
+          cp Zisternenfuellstand.ino ./sketch/Zisternenfuellstand/
           arduino-cli compile \
             --fqbn esp32:esp32:nodemcu-32s \
             --output-dir ./build \
-            Zisternenfuellstand.ino
+            ./sketch/Zisternenfuellstand
 
       - name: Prepare release artifacts
         run: |
