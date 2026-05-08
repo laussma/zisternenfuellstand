@@ -36,6 +36,18 @@ jobs:
             --output-dir ./build \
             ./sketch/Zisternenfuellstand
 
+      - name: Build PDF documentation
+        run: |
+          sudo apt-get install -y pandoc wkhtmltopdf xvfb
+          mkdir -p ./build
+          xvfb-run --auto-servernum \
+            pandoc docs/Dokumentation.md \
+              -o ./build/Dokumentation.pdf \
+              --pdf-engine=wkhtmltopdf \
+              --metadata title="Zisternenfüllstand – Bedienungsanleitung" \
+              -V margin-top=20 -V margin-right=20 \
+              -V margin-bottom=20 -V margin-left=20
+
       - name: Prepare release artifacts
         run: |
           cp ./build/Zisternenfuellstand.ino.bin ./build/firmware.bin
@@ -51,6 +63,7 @@ jobs:
           path: |
             ./build/firmware.bin
             ./build/version.txt
+            ./build/Dokumentation.pdf
           retention-days: 30
 
   release:
@@ -91,5 +104,6 @@ jobs:
           files: |
             ./build/firmware.bin
             ./build/version.txt
+            ./build/Dokumentation.pdf
           draft: false
           prerelease: false

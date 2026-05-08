@@ -229,7 +229,7 @@ String htmlFooter() {
   f += " | AP: " + WiFi.softAPIP().toString();
   f += " | v" FW_VERSION;
   f += " | <a href='/update'>Update</a>";
-  f += " | <a href='https://drive.google.com/file/d/1bEZw84s1pqIfYDKGrR8YEO-sZR014mgw/view' target='_blank'>Doku</a>";
+  f += " | <a href='/doku' target='_blank'>Doku</a>";
   f += "</footer></body></html>";
   return f;
 }
@@ -404,6 +404,11 @@ void handleAnalogToggle(){
   server.send(303);
 }
 
+void handleDoku() {
+  server.sendHeader("Location", "https://github.com/laussma/zisternenfuellstand/releases/latest/download/Dokumentation.pdf");
+  server.send(302, "text/plain", "");
+}
+
 void handleAutoUpdateToggle(){
   autoUpdateEnabled = !autoUpdateEnabled;
   savePersist();
@@ -512,6 +517,7 @@ void setup(){
   server.on("/measure", pageMeasure);
   server.on("/analog", HTTP_POST, handleAnalogToggle);
   server.on("/autoupdate", HTTP_POST, handleAutoUpdateToggle);
+  server.on("/doku", handleDoku);
   server.on("/api/status", handleStatusAPI);
   server.on("/update", pageUpdate);
   server.on("/do_update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
