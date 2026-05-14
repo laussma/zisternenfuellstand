@@ -107,7 +107,7 @@ float measureDistance() {
     digitalWrite(PIN_TRIG, LOW);
     uint32_t dur = pulseIn(PIN_ECHO, HIGH, ULTRASONIC_TIMEOUT);
     samples[i] = dur ? dur : ULTRASONIC_TIMEOUT;
-    delay(6);
+    delay(35); // > ULTRASONIC_TIMEOUT/1000 ms damit Echo-Nachklang abklingt
   }
   float us = medianOf(samples, SAMPLES);
   if (us >= ULTRASONIC_TIMEOUT) return NAN;
