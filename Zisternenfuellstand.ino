@@ -108,12 +108,18 @@ float measureDistance() {
     digitalWrite(PIN_TRIG, LOW);
     uint32_t dur = pulseIn(PIN_ECHO, HIGH, ULTRASONIC_TIMEOUT);
     samples[i] = dur ? dur : ULTRASONIC_TIMEOUT;
-    delay(35); // > ULTRASONIC_TIMEOUT/1000 ms damit Echo-Nachklang abklingt
+    delay(35);
   }
-  float us = medianOf(samples, SAMPLES);
+  // Trimmed median: erst vollständig sortieren, dann mittlere 50% auswerten.
+  // Verwirft die 25% kleinsten (Fehlmessungen/Nahreflexionen) und
+  // 25% größten (Timeouts/Störungen) – robust gegen bis zu 50% Ausreißer.
+  medianOf(samples, SAMPLES);          // sortiert in-place (Rückgabe ignoriert)
+  uint8_t lo = SAMPLES / 4;            // unterste 25% überspringen
+  uint8_t n  = SAMPLES / 2;            // mittlere 50% verwenden
+  float us = medianOf(samples + lo, n);
   if (us >= ULTRASONIC_TIMEOUT) return NAN;
   float cm = us / 58.0f;
-  if (cm < SENSOR_MIN_CM) return NAN; // Blindzone JSN-SR04T
+  if (cm < SENSOR_MIN_CM) return NAN;
   return cm;
 }
 
@@ -556,10 +562,12 @@ void loop(){
   if(now - lastMeasure >= MEASURE_INTERVAL){
     lastMeasure = now;
     float d = measureDistance();
-    float perc = computePercent(d);
-    volume = calculateVolume(d);
-    if(!isnan(d)) lastDist = d;
-    if(!isnan(perc)) lastPerc = perc;
+    if (!isnan(d)) {
+      // EMA α=0.2: glättet Schwankungen, Zisternenpegel ändert sich langsam
+      lastDist = isnan(lastDist) ? d : (0.2f * d + 0.8f * lastDist);
+      lastPerc = computePercent(lastDist);
+      volume   = calculateVolume(lastDist);
+    }
     Serial.println("---------------------");
     Serial.print("Distance: ");
     Serial.println(d);
