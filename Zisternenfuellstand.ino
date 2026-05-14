@@ -434,7 +434,6 @@ void checkAndApplyOTA() {
       http.end();
       WiFiClientSecure uc;
       uc.setInsecure();
-      httpUpdate.setLedPin(LED_BUILTIN, LOW);
       httpUpdate.rebootOnUpdate(true);
       t_httpUpdate_return ret = httpUpdate.update(uc, OTA_FIRMWARE_URL);
       if (ret == HTTP_UPDATE_FAILED) {
