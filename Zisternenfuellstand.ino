@@ -39,7 +39,7 @@
 #define STA_TIMEOUT 10000UL
 const unsigned long STA_RETRY_INTERVAL = 4*15000UL; // alle 2min prüfen
 const unsigned long AP_GRACE_PERIOD = 10 * 60 * 1000UL; // 10 Minuten
-#define FW_VERSION "2.6"
+#define FW_VERSION "2.7"
 
 // ---------- OTA / Update -----------------------
 #define OTA_ARDUINO_PASS  "zisternenfuellstand"   // Passwort für Arduino-IDE OTA
