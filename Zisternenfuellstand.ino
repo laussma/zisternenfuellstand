@@ -66,6 +66,7 @@ bool staEnabled = false;
 float lastDist = NAN;
 float lastPerc = NAN;
 bool autoUpdateEnabled = false;
+bool mdnsStarted = false;
 
 unsigned long lastMeasure = 0;
 unsigned long lastSTAcheck = 0;
@@ -171,33 +172,12 @@ void startAP() {
 
 void connectSTA() {
   if (!staEnabled || !sta_ssid.length()) return;
-  // AP-Modus beibehalten während Verbindungsversuch – disconnect(false,false)
-  // trennt nur die STA-Verbindung, lässt den AP unangetastet
   WiFi.mode(WIFI_AP_STA);
-  WiFi.disconnect(false, false);
-  delay(100);
-  Serial.println("[STA] Verbinde zu '" + sta_ssid + "' …");
+  WiFi.disconnect(false, false); // nur STA trennen, AP bleibt
+  delay(50);
+  Serial.println("[STA] Starte Verbindung zu '" + sta_ssid + "' …");
   WiFi.begin(sta_ssid.c_str(), sta_pass.c_str());
-  unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < STA_TIMEOUT) {
-    delay(250);
-    Serial.print('.');
-  }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("[STA] Verbunden. IP: " + WiFi.localIP().toString());
-    // AP-Abschaltung nur über loop() nach Grace Period – nicht hier,
-    // da diese Funktion aus Web-Handlern aufgerufen wird und der Client
-    // sonst keine Antwort mehr bekommt
-    if (MDNS.begin(MDNS_HOST)) {
-      MDNS.addService("http", "tcp", 80);
-      Serial.println("[mDNS] http://" + String(MDNS_HOST) + ".local");
-    } else {
-      Serial.println("[mDNS] mDNS start fehlgeschlagen");
-    }
-  } else {
-    Serial.println("[STA] Verbindung fehlgeschlagen – bleibe im AP-Modus");
-  }
+  // nicht blockierend – loop() erkennt WL_CONNECTED und richtet mDNS ein
 }
 
 // ---------- HTML -------------------------------
@@ -243,14 +223,43 @@ void pageRoot() {
 }
 
 void pageConfig() {
+  // WiFi-Status für Anzeige auswerten
+  wl_status_t ws = (wl_status_t)WiFi.status();
+  String wifiStatusHtml;
+  bool connecting = false;
+  switch (ws) {
+    case WL_CONNECTED:
+      wifiStatusHtml = "<span style='color:green'>&#10003; Verbunden &ndash; IP: <b>"
+                       + WiFi.localIP().toString() + "</b></span>";
+      break;
+    case WL_NO_SSID_AVAIL:
+      wifiStatusHtml = "<span style='color:red'>&#10007; SSID nicht gefunden</span>";
+      break;
+    case WL_CONNECT_FAILED:
+      wifiStatusHtml = "<span style='color:red'>&#10007; Verbindung fehlgeschlagen (Passwort?)</span>";
+      break;
+    default:
+      if (staEnabled && sta_ssid.length()) {
+        wifiStatusHtml = "<span style='color:orange'>&#9679; Verbinde mit &laquo;"
+                         + htmlEncode(sta_ssid) + "&raquo;&hellip;</span>";
+        connecting = true;
+      } else {
+        wifiStatusHtml = "<span style='color:gray'>Nicht konfiguriert</span>";
+      }
+  }
+
   String pg = htmlHeader("Konfiguration");
+  if (connecting) pg += "<meta http-equiv='refresh' content='4'>";
   // WLAN
-  pg += "<div class='card'><h2>Heim-WLAN</h2><form method='POST' action='/wifi'>";
+  pg += "<div class='card'><h2>Heim-WLAN</h2>";
+  pg += "Status: " + wifiStatusHtml + "<br><br>";
+  pg += "<form method='POST' action='/wifi'>";
   pg += "SSID:<input name='ssid' value='" + htmlEncode(sta_ssid) + "'/><br>";
   pg += "Passwort:<input type='password' name='pass' value='" + sta_pass + "'/><br>";
-  pg += "<button type='submit'>Speichern & Verbinden</button></form>";
-  pg += "Aktiv: <b>" + String(staEnabled?"AN":"AUS") + "</b><br>";
-  pg += "<form method='POST' action='/sta'><button>" + String(staEnabled?"Deaktivieren":"Aktivieren") + "</button></form></div>";
+  pg += "<button type='submit'>Speichern &amp; Verbinden</button></form>";
+  pg += "Client-Modus: <b>" + String(staEnabled?"AN":"AUS") + "</b> ";
+  pg += "<form method='POST' action='/sta' style='display:inline'><button style='width:auto'>"
+        + String(staEnabled?"Deaktivieren":"Aktivieren") + "</button></form></div>";
   // Kalibrierung
   pg += "<div class='card'><h2>Kalibrierung</h2>";
   pg += "Leer: <b>" + (isnan(d_leer) ? String("--") : String(d_leer, 1)) + " cm</b><br>";
@@ -300,7 +309,8 @@ void handleStaToggle(){
   if(staEnabled){
     connectSTA();
   } else {
-    WiFi.disconnect(true, true);
+    WiFi.disconnect(false, false);
+    mdnsStarted = false;
   }
   server.sendHeader("Location", "/config");
   server.send(303);
@@ -574,11 +584,26 @@ void loop(){
     }
     Serial.println();    
   }
-  // STA / AP Logik
-  if(now - lastSTAcheck >= STA_RETRY_INTERVAL){
+  // mDNS starten sobald STA-Verbindung steht (einmalig)
+  if (WiFi.status() == WL_CONNECTED && !mdnsStarted) {
+    Serial.println("[STA] Verbunden. IP: " + WiFi.localIP().toString());
+    if (MDNS.begin(MDNS_HOST)) {
+      MDNS.addService("http", "tcp", 80);
+      Serial.println("[mDNS] http://" + String(MDNS_HOST) + ".local");
+    } else {
+      Serial.println("[mDNS] Start fehlgeschlagen");
+    }
+    mdnsStarted = true;
+  }
+  if (WiFi.status() != WL_CONNECTED && mdnsStarted) {
+    mdnsStarted = false; // zurücksetzen damit mDNS nach Re-Connect neu startet
+  }
+
+  // STA-Retry alle 60 Sekunden falls nicht verbunden
+  if (now - lastSTAcheck >= STA_RETRY_INTERVAL) {
     lastSTAcheck = now;
-    if(staEnabled && WiFi.status() != WL_CONNECTED){
-      Serial.println("[STA] Nicht verbunden, erneuter Connect-Versuch.");
+    if (staEnabled && WiFi.status() != WL_CONNECTED) {
+      Serial.println("[STA] Nicht verbunden – neuer Versuch.");
       connectSTA();
     }
   }
