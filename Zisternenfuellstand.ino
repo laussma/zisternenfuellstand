@@ -171,7 +171,10 @@ void startAP() {
 
 void connectSTA() {
   if (!staEnabled || !sta_ssid.length()) return;
-  WiFi.disconnect(true, true); // aufräumen
+  // AP-Modus beibehalten während Verbindungsversuch – disconnect(false,false)
+  // trennt nur die STA-Verbindung, lässt den AP unangetastet
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.disconnect(false, false);
   delay(100);
   Serial.println("[STA] Verbinde zu '" + sta_ssid + "' …");
   WiFi.begin(sta_ssid.c_str(), sta_pass.c_str());
@@ -183,11 +186,9 @@ void connectSTA() {
   Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("[STA] Verbunden. IP: " + WiFi.localIP().toString());
-    if (millis() >= apExpires) {
-      WiFi.softAPdisconnect(true);
-      WiFi.mode(WIFI_STA);
-      Serial.println("[AP] abgeschaltet nach Grace Period.");
-    }
+    // AP-Abschaltung nur über loop() nach Grace Period – nicht hier,
+    // da diese Funktion aus Web-Handlern aufgerufen wird und der Client
+    // sonst keine Antwort mehr bekommt
     if (MDNS.begin(MDNS_HOST)) {
       MDNS.addService("http", "tcp", 80);
       Serial.println("[mDNS] http://" + String(MDNS_HOST) + ".local");
@@ -196,11 +197,6 @@ void connectSTA() {
     }
   } else {
     Serial.println("[STA] Verbindung fehlgeschlagen – bleibe im AP-Modus");
-    if (WiFi.getMode() != WIFI_AP_STA) WiFi.mode(WIFI_AP_STA);
-    if (WiFi.softAPIP().toString() == "0.0.0.0") {
-      WiFi.softAP(AP_SSID, AP_PASS);
-      Serial.println("[AP] (Fallback) neu gestartet.");
-    }
   }
 }
 
