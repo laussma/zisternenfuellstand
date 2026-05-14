@@ -31,6 +31,7 @@
 #define PIN_ECHO 4
 #define SAMPLES 20
 #define ULTRASONIC_TIMEOUT 30000UL // 30ms ~ 5m
+#define SENSOR_MIN_CM      27.0f   // JSN-SR04T Blindzone: unter 27cm keine valide Messung
 #define MEASURE_INTERVAL 2000UL    // ms
 #define AP_SSID "CONFIG_ZISTERNE_AP"
 #define AP_PASS "12345678"
@@ -111,7 +112,9 @@ float measureDistance() {
   }
   float us = medianOf(samples, SAMPLES);
   if (us >= ULTRASONIC_TIMEOUT) return NAN;
-  return us / 58.0f; // cm
+  float cm = us / 58.0f;
+  if (cm < SENSOR_MIN_CM) return NAN; // Blindzone JSN-SR04T
+  return cm;
 }
 
 float computePercent(float d) {
@@ -265,6 +268,9 @@ void pageConfig() {
   pg += "Leer: <b>" + (isnan(d_leer) ? String("--") : String(d_leer, 1)) + " cm</b><br>";
   pg += "Voll: <b>" + (isnan(d_voll) ? String("--") : String(d_voll, 1)) + " cm</b><br>";
   pg += "Durchmesser: <b>" + (isnan(diameter) ? String("--") : String(diameter, 1)) + " cm</b><br>";
+  if (!isnan(d_voll) && d_voll < SENSOR_MIN_CM)
+    pg += "<p style='color:red'>&#9888; Voll-Wert liegt in der Blindzone des Sensors (&lt;"
+          + String(SENSOR_MIN_CM, 0) + " cm) – Messung unzuverl&auml;ssig!</p>";
   pg += "<form method='POST' action='/set_leer'><button>Setze LEER = aktuelle Distanz</button></form>";
   pg += "<form method='POST' action='/set_voll'><button>Setze VOLL = aktuelle Distanz</button></form>";
   pg += "<form method='POST' action='/set_manual'>";
