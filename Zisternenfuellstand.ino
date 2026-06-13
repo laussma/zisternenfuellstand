@@ -572,7 +572,7 @@ void loop(){
     Serial.print("Distance: ");
     Serial.println(d);
     Serial.print("Percent: ");
-    Serial.println(perc);
+    Serial.println(lastPerc);
     Serial.print("Volumen: ");
     Serial.print(volume);
     Serial.println(" Liter");
