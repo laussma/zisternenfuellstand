@@ -1,6 +1,6 @@
 # Zisternenfüllstand – Bedienungsanleitung
 
-**Version 2.6 | Stand: Mai 2026**
+**Version 2.7 | Stand: Juni 2026**
 
 ---
 
@@ -21,7 +21,7 @@ Sie können das Gerät über jeden Webbrowser (Smartphone, Tablet, PC) bedienen 
 | Komponente | Details |
 |---|---|
 | Mikrocontroller | ESP32 |
-| Sensor | Ultraschall HC-SR04 |
+| Sensor | Ultraschall JSN-SR04T |
 | Trigger-Pin | GPIO 16 |
 | Echo-Pin | GPIO 4 (über Spannungsteiler) |
 | Analogausgang | GPIO 25 (DAC, 0–3,3 V) |
@@ -143,8 +143,7 @@ Die Update-Seite ist passwortgeschützt:
 | Benutzername | `admin` |
 | Passwort | `zisternenfuellstand` |
 
-1. Laden Sie die neue Firmware-Datei (`firmware.bin`) von der [GitHub-Releases-Seite](https://github.com/laussma/zisternenfuellstand/releases/latest) herunter
-2. Öffnen Sie **`http://zisterne.local/update`** im Browser
+1. Öffnen Sie **`http://zisterne.local/update`** im Browser
 3. Geben Sie Benutzername und Passwort ein
 4. Klicken Sie auf **„Datei auswählen"** und wählen Sie die `firmware.bin`
 5. Klicken Sie **„Hochladen & Flashen"**

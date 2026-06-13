@@ -423,8 +423,111 @@ void handleAnalogToggle(){
 }
 
 void handleDoku() {
-  server.sendHeader("Location", "https://github.com/laussma/zisternenfuellstand/releases/latest/download/Dokumentation.pdf");
-  server.send(302, "text/plain", "");
+  server.send(200, "text/html; charset=utf-8", R"HTML(<!DOCTYPE html><html><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Bedienungsanleitung – Zisternenfüllstand</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:1rem auto;padding:0 1rem;line-height:1.5;}
+h1{font-size:1.5rem;border-bottom:2px solid #0077cc;padding-bottom:.4rem;}
+h2{font-size:1.2rem;border-bottom:1px solid #ccc;padding-bottom:.2rem;margin-top:2rem;}
+h3{font-size:1rem;margin-top:1.5rem;}
+h4{font-size:.95rem;margin-top:1rem;}
+table{border-collapse:collapse;width:100%;margin:.5rem 0;}
+th,td{border:1px solid #ccc;padding:6px 10px;text-align:left;}
+th{background:#f0f0f0;}
+code{background:#f4f4f4;padding:1px 4px;border-radius:3px;font-size:.9em;}
+pre{background:#f4f4f4;padding:10px;border-radius:4px;overflow-x:auto;}
+blockquote{border-left:3px solid #0077cc;margin:0;padding:.3rem .8rem;background:#f0f8ff;}
+hr{border:none;border-top:1px solid #ddd;margin:1.5rem 0;}
+ul,ol{padding-left:1.5rem;}
+</style></head><body>
+<h1>Zisternenfüllstand &#8211; Bedienungsanleitung</h1>
+<p><strong>Version )HTML" FW_VERSION R"HTML( | Zisternenfüllstand-Gerät</strong></p>
+<hr>
+<h2>Was macht dieses Gerät?</h2>
+<p>Das Gerät misst den Wasserstand in Ihrer Zisterne automatisch alle 2 Sekunden und zeigt das Ergebnis als:</p>
+<ul><li><strong>Prozentwert</strong> (z.&nbsp;B. „75&nbsp;% voll")</li>
+<li><strong>Liter</strong> (z.&nbsp;B. „1.500 Liter")</li></ul>
+<p>Die Messung erfolgt berührungslos mit einem Ultraschallsensor. Sie können das Gerät über jeden Webbrowser (Smartphone, Tablet, PC) bedienen und konfigurieren.</p>
+<hr>
+<h2>Technische Übersicht</h2>
+<table><tr><th>Komponente</th><th>Details</th></tr>
+<tr><td>Mikrocontroller</td><td>ESP32</td></tr>
+<tr><td>Sensor</td><td>Ultraschall JSN-SR04T</td></tr>
+<tr><td>Trigger-Pin</td><td>GPIO 16</td></tr>
+<tr><td>Echo-Pin</td><td>GPIO 4 (über Spannungsteiler)</td></tr>
+<tr><td>Analogausgang</td><td>GPIO 25 (DAC, 0–3,3&nbsp;V)</td></tr>
+<tr><td>WLAN</td><td>2,4&nbsp;GHz, AP + STA gleichzeitig</td></tr>
+<tr><td>Web-Oberfläche</td><td>Port 80, mDNS: <code>zisterne.local</code></td></tr></table>
+<hr>
+<h2>Inbetriebnahme – Schritt für Schritt</h2>
+<h3>Schritt 1: Gerät einschalten</h3>
+<p>Schließen Sie das Gerät an die Stromversorgung an (5&nbsp;V). Das Gerät startet automatisch.</p>
+<blockquote><strong>Wichtig:</strong> Nach dem Einschalten öffnet das Gerät automatisch für <strong>10 Minuten</strong> einen eigenen WLAN-Zugangspunkt (Access Point).</blockquote>
+<h3>Schritt 2: Mit dem Gerät verbinden</h3>
+<ol><li>WLAN-Einstellungen öffnen</li>
+<li>Netzwerk <code>CONFIG_ZISTERNE_AP</code> auswählen</li>
+<li>Passwort: <code>12345678</code></li>
+<li>Browser öffnen: <a href='http://192.168.4.1'>http://192.168.4.1</a></li></ol>
+<h3>Schritt 3: Heim-WLAN einrichten</h3>
+<ol><li>Klicken Sie auf <strong>„Konfiguration"</strong></li>
+<li>Im Abschnitt <strong>„Heim-WLAN"</strong>: SSID und Passwort eingeben</li>
+<li>Klicken Sie <strong>„Speichern &amp; Verbinden"</strong></li></ol>
+<p>Das Gerät ist danach über <a href='http://zisterne.local'>http://zisterne.local</a> erreichbar.</p>
+<blockquote><strong>Tipp:</strong> Die IP-Adresse steht im Footer der Webseite – als Alternative zu <code>zisterne.local</code>.</blockquote>
+<h3>Schritt 4: Sensor kalibrieren</h3>
+<p>Gehen Sie zu <strong>Konfiguration → Kalibrierung</strong>.</p>
+<h4>Option A: Automatisch (einfach)</h4>
+<ol><li><strong>Leerer Zustand:</strong> Zisterne leer → <strong>„Setze LEER = aktuelle Distanz"</strong></li>
+<li><strong>Voller Zustand:</strong> Zisterne voll → <strong>„Setze VOLL = aktuelle Distanz"</strong></li></ol>
+<h4>Option B: Manuell (mit Maßband)</h4>
+<ol><li><strong>Leer (cm):</strong> Distanz Sensor bis Boden (z.&nbsp;B. <code>320</code>)</li>
+<li><strong>Voll (cm):</strong> Distanz Sensor bis max. Wasserstand (z.&nbsp;B. <code>30</code>)</li>
+<li><strong>Durchmesser (cm):</strong> Innendurchmesser der Zisterne (z.&nbsp;B. <code>150</code>)</li>
+<li>Klicken Sie <strong>„Speichern"</strong></li></ol>
+<blockquote>Der Leer-Wert ist immer größer als der Voll-Wert.</blockquote>
+<h3>Schritt 5: Optionale Funktionen</h3>
+<h4>API / Smart-Home-Integration</h4>
+<p>Aktivieren Sie <strong>„Publishing"</strong> – dann ist der Füllstand abrufbar unter:</p>
+<pre>http://zisterne.local/api/status</pre>
+<p>Antwort:</p>
+<pre>{"distance_cm":150.5,"percent":75.0,"analog_output":true,"volumen":1250.30,"timestamp_ms":123456789}</pre>
+<p>Kompatibel mit Home Assistant, ioBroker, Loxone u.&nbsp;a.</p>
+<h4>Analogausgang (0–3,3&nbsp;V an GPIO 25)</h4>
+<p>Aktivieren Sie <strong>„DAC-Ausgabe"</strong>:<br>0&nbsp;V = leer (0&nbsp;%), 3,3&nbsp;V = voll (100&nbsp;%)</p>
+<hr>
+<h2>Firmware aktualisieren</h2>
+<h3>Via Web-Browser</h3>
+<table><tr><th>Feld</th><th>Wert</th></tr>
+<tr><td>Benutzername</td><td><code>admin</code></td></tr>
+<tr><td>Passwort</td><td><code>zisternenfuellstand</code></td></tr></table>
+<ol><li><a href='/update'>http://zisterne.local/update</a> öffnen</li>
+<li>Benutzername und Passwort eingeben</li>
+<li><code>firmware.bin</code> auswählen → <strong>„Hochladen &amp; Flashen"</strong></li></ol>
+<h3>Automatisches Update</h3>
+<p>Aktivieren Sie unter <strong>Konfiguration → Auto-Update</strong> – das Gerät prüft stündlich auf neue Versionen und aktualisiert sich selbst.</p>
+<h3>Via Arduino IDE</h3>
+<p>Das Gerät erscheint unter <strong>Werkzeuge → Port</strong> als <code>zisterne</code>. Passwort: <code>zisternenfuellstand</code></p>
+<hr>
+<h2>Statusseite – Was bedeutet was?</h2>
+<table><tr><th>Anzeige</th><th>Bedeutung</th></tr>
+<tr><td>Distanz: <code>--</code></td><td>Sensor liefert kein Signal</td></tr>
+<tr><td>Füllstand: <code>--</code></td><td>Kalibrierung fehlt (Schritt 4)</td></tr>
+<tr><td>Volumen: <code>--</code></td><td>Durchmesser nicht konfiguriert</td></tr>
+<tr><td>Füllstand: <code>0 %</code></td><td>Zisterne leer</td></tr>
+<tr><td>Füllstand: <code>100 %</code></td><td>Zisterne voll</td></tr></table>
+<hr>
+<h2>Fehlerbehebung</h2>
+<table><tr><th>Problem</th><th>Lösung</th></tr>
+<tr><td>Webseite nicht erreichbar</td><td>Gerät neu starten, mit <code>CONFIG_ZISTERNE_AP</code> verbinden, <code>192.168.4.1</code> aufrufen</td></tr>
+<tr><td><code>zisterne.local</code> funktioniert nicht</td><td>IP-Adresse aus dem Footer direkt eingeben</td></tr>
+<tr><td>Füllstand springt stark</td><td>Sensor nicht fest montiert oder Wasser bewegt – kurz warten</td></tr>
+<tr><td>WLAN-Verbindung schlägt fehl</td><td>SSID und Passwort prüfen – Gerät versucht alle 2 Minuten neu</td></tr>
+<tr><td>Nach Update kein Zugriff</td><td>Gerät neu starten (Strom kurz trennen)</td></tr>
+<tr><td>Sensor zeigt falschen Wert</td><td>Sensorversorgung auf 5&nbsp;V prüfen – JSN-SR04T benötigt zwingend 5&nbsp;V</td></tr></table>
+<hr>
+<p style='font-size:.8rem;color:#666;'>Autor: Matthias Lauß &nbsp;|&nbsp; Lizenz: MIT &nbsp;|&nbsp; Firmware )HTML" FW_VERSION R"HTML(</p>
+</body></html>)HTML");
 }
 
 void handleAutoUpdateToggle(){
