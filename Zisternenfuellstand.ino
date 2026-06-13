@@ -69,6 +69,21 @@ float lastPerc = NAN;
 bool autoUpdateEnabled = false;
 bool mdnsStarted = false;
 
+// ISR-basierte Echo-Messung (WiFi-Interrupt-sicher)
+volatile uint32_t g_echoStart = 0;
+volatile uint32_t g_echoDur   = 0;
+volatile bool     g_echoReady = false;
+
+void IRAM_ATTR echoISR() {
+  if (digitalRead(PIN_ECHO)) {
+    g_echoStart = micros();
+    g_echoReady = false;
+  } else if (g_echoStart > 0) {
+    g_echoDur   = micros() - g_echoStart;
+    g_echoReady = true;
+  }
+}
+
 unsigned long lastMeasure = 0;
 unsigned long lastSTAcheck = 0;
 unsigned long apExpires = 0; // Timestamp bis wann AP garantiert an ist
@@ -103,19 +118,20 @@ float medianOf(uint32_t *arr, uint8_t n) {
 float measureDistance() {
   uint32_t samples[SAMPLES];
   for (uint8_t i = 0; i < SAMPLES; ++i) {
-    digitalWrite(PIN_TRIG, LOW); delayMicroseconds(2);
+    g_echoReady = false;
+    g_echoStart = 0;
+    digitalWrite(PIN_TRIG, LOW);  delayMicroseconds(2);
     digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(10);
     digitalWrite(PIN_TRIG, LOW);
-    uint32_t dur = pulseIn(PIN_ECHO, HIGH, ULTRASONIC_TIMEOUT);
-    samples[i] = dur ? dur : ULTRASONIC_TIMEOUT;
+    // ISR misst den Echopuls hardware-genau, unabhängig von WiFi-Interrupts
+    uint32_t deadline = micros() + ULTRASONIC_TIMEOUT;
+    while (!g_echoReady && (int32_t)(micros() - deadline) < 0) yield();
+    samples[i] = g_echoReady ? g_echoDur : ULTRASONIC_TIMEOUT;
     delay(35);
   }
-  // Trimmed median: erst vollständig sortieren, dann mittlere 50% auswerten.
-  // Verwirft die 25% kleinsten (Fehlmessungen/Nahreflexionen) und
-  // 25% größten (Timeouts/Störungen) – robust gegen bis zu 50% Ausreißer.
-  medianOf(samples, SAMPLES);          // sortiert in-place (Rückgabe ignoriert)
-  uint8_t lo = SAMPLES / 4;            // unterste 25% überspringen
-  uint8_t n  = SAMPLES / 2;            // mittlere 50% verwenden
+  medianOf(samples, SAMPLES);
+  uint8_t lo = SAMPLES / 4;
+  uint8_t n  = SAMPLES / 2;
   float us = medianOf(samples + lo, n);
   if (us >= ULTRASONIC_TIMEOUT) return NAN;
   float cm = us / 58.0f;
@@ -620,6 +636,7 @@ void setup(){
   delay(200);
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PIN_ECHO), echoISR, CHANGE);
   loadPersist();
   loadWifiCreds();
   startAP();
