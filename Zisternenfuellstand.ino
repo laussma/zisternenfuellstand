@@ -75,14 +75,24 @@ volatile uint32_t g_echoDur   = 0;
 volatile bool     g_echoReady = false;
 
 void IRAM_ATTR echoISR() {
-  if (digitalRead(PIN_ECHO)) {
+  if (REG_READ(GPIO_IN_REG) & (1UL << PIN_ECHO)) {
     g_echoStart = micros();
     g_echoReady = false;
   } else if (g_echoStart > 0) {
-    g_echoDur   = micros() - g_echoStart;
-    g_echoReady = true;
+    uint32_t dur = micros() - g_echoStart;
+    // Nur Pulse >= Blindzone akzeptieren (filtert Störflanken)
+    if (dur >= (uint32_t)(SENSOR_MIN_CM * 58UL)) {
+      g_echoDur   = dur;
+      g_echoReady = true;
+    }
+    // Zu kurze Pulse: g_echoStart reset damit nächste Flanke neu startet
+    else {
+      g_echoStart = 0;
+    }
   }
 }
+
+uint32_t g_lastSamples[SAMPLES]; // für Debug-Endpoint
 
 unsigned long lastMeasure = 0;
 unsigned long lastSTAcheck = 0;
@@ -123,11 +133,12 @@ float measureDistance() {
     digitalWrite(PIN_TRIG, LOW);  delayMicroseconds(2);
     digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(10);
     digitalWrite(PIN_TRIG, LOW);
-    // ISR misst den Echopuls hardware-genau, unabhängig von WiFi-Interrupts
+    // Tight-Loop: kein yield() damit WiFi-Tasks keine ISR-Flanke verdecken
     uint32_t deadline = micros() + ULTRASONIC_TIMEOUT;
-    while (!g_echoReady && (int32_t)(micros() - deadline) < 0) yield();
+    while (!g_echoReady && (int32_t)(micros() - deadline) < 0) { /* busy wait */ }
     samples[i] = g_echoReady ? g_echoDur : ULTRASONIC_TIMEOUT;
-    delay(35);
+    g_lastSamples[i] = samples[i];
+    delay(35); // WiFi bekommt Zeit zwischen den Samples
   }
   medianOf(samples, SAMPLES);
   uint8_t lo = SAMPLES / 4;
@@ -397,6 +408,19 @@ void handlePublish(){
   server.send(303);
 }
 
+void handleDebug(){
+  String j = "{\"samples_us\":[";
+  for (uint8_t i = 0; i < SAMPLES; ++i) {
+    j += String(g_lastSamples[i]);
+    if (i < SAMPLES-1) j += ",";
+  }
+  j += "],\"computed_cm\":" + (isnan(lastDist) ? String("null") : String(lastDist,2));
+  j += ",\"sensor_min_cm\":" + String(SENSOR_MIN_CM,0);
+  j += ",\"timeout_us\":" + String(ULTRASONIC_TIMEOUT);
+  j += "}";
+  server.send(200, "application/json", j);
+}
+
 void pageMeasure(){
   float d = measureDistance();
   float p = computePercent(d);
@@ -652,6 +676,7 @@ void setup(){
   server.on("/set_manual", HTTP_POST, handleSetManual);
   server.on("/publish", HTTP_POST, handlePublish);
   server.on("/measure", pageMeasure);
+  server.on("/debug", handleDebug);
   server.on("/analog", HTTP_POST, handleAnalogToggle);
   server.on("/autoupdate", HTTP_POST, handleAutoUpdateToggle);
   server.on("/doku", handleDoku);
