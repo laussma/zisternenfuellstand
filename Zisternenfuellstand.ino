@@ -33,13 +33,15 @@
 #define ULTRASONIC_TIMEOUT 30000UL // 30ms ~ 5m
 #define SENSOR_MIN_CM      27.0f   // JSN-SR04T Blindzone: unter 27cm keine valide Messung
 #define MEASURE_INTERVAL 2000UL    // ms
+#define MAX_JUMP_CM        30.0f   // groesster plausibler Sprung zwischen 2 Messzyklen
+#define MEASURE_STALE_MS   30000UL // ohne gueltige Messung danach Anzeige auf "--" zuruecksetzen
 #define AP_SSID "CONFIG_ZISTERNE_AP"
 #define AP_PASS "12345678"
 #define MDNS_HOST "zisterne"
 #define STA_TIMEOUT 10000UL
 const unsigned long STA_RETRY_INTERVAL = 4*15000UL; // alle 2min prüfen
 const unsigned long AP_GRACE_PERIOD = 10 * 60 * 1000UL; // 10 Minuten
-#define FW_VERSION "2.7"
+#define FW_VERSION "2.8"
 
 // ---------- OTA / Update -----------------------
 #define OTA_ARDUINO_PASS  "zisternenfuellstand"   // Passwort für Arduino-IDE OTA
@@ -95,6 +97,7 @@ void IRAM_ATTR echoISR() {
 uint32_t g_lastSamples[SAMPLES]; // für Debug-Endpoint
 
 unsigned long lastMeasure = 0;
+unsigned long lastGoodMeasure = 0; // millis der letzten gueltigen Messung (Staleness-Erkennung)
 unsigned long lastSTAcheck = 0;
 unsigned long apExpires = 0; // Timestamp bis wann AP garantiert an ist
 unsigned long lastOTACheck = 0;
@@ -107,13 +110,16 @@ const String logoMimeType = "image/jpg"; // image/jpeg, je nach Dateityp
 // ---------- Helfer -----------------------------
 // distance in cm, return volume in Liter
 float calculateVolume(float distance) {
-    if(isnan(d_leer) || isnan(diameter) || isnan(distance)) return NAN;
+    if(isnan(d_leer) || isnan(d_voll) || isnan(diameter) || isnan(distance)) return NAN;
     float pi = 3.141592;
-    float distance_l = distance / 10; //distance in dm3
-    float d_leer_l = d_leer / 10;
-    float height = d_leer_l - distance_l;
+    float hi = max(d_leer, d_voll);              // "leer" = groesste Distanz (Referenz)
+    float lo = min(d_leer, d_voll);              // "voll" = kleinste Distanz
+    float height = (hi - distance) / 10;         // Wassersaeule in dm
+    if (height < 0) height = 0;                  // unter "leer": 0 statt negativ
+    float maxH = (hi - lo) / 10;
+    if (height > maxH) height = maxH;            // ueber "voll": auf max gedeckelt
     float diameter_l = diameter / 10;
-    return ((diameter_l * diameter_l * pi) / 4) * height; 
+    return ((diameter_l * diameter_l * pi) / 4) * height;
 }
 
 float medianOf(uint32_t *arr, uint8_t n) {
@@ -126,7 +132,8 @@ float medianOf(uint32_t *arr, uint8_t n) {
 }
 
 float measureDistance() {
-  uint32_t samples[SAMPLES];
+  uint32_t valid[SAMPLES];   // nur erfolgreich gemessene Echos
+  uint8_t  validCount = 0;
   for (uint8_t i = 0; i < SAMPLES; ++i) {
     g_echoReady = false;
     g_echoStart = 0;
@@ -136,15 +143,19 @@ float measureDistance() {
     // Tight-Loop: kein yield() damit WiFi-Tasks keine ISR-Flanke verdecken
     uint32_t deadline = micros() + ULTRASONIC_TIMEOUT;
     while (!g_echoReady && (int32_t)(micros() - deadline) < 0) { /* busy wait */ }
-    samples[i] = g_echoReady ? g_echoDur : ULTRASONIC_TIMEOUT;
-    g_lastSamples[i] = samples[i];
+    g_lastSamples[i] = g_echoReady ? g_echoDur : ULTRASONIC_TIMEOUT; // Debug: roh inkl. Timeouts
+    if (g_echoReady) valid[validCount++] = g_echoDur;                // nur echte Echos in den Pool
     delay(35); // WiFi bekommt Zeit zwischen den Samples
   }
-  medianOf(samples, SAMPLES);
-  uint8_t lo = SAMPLES / 4;
-  uint8_t n  = SAMPLES / 2;
-  float us = medianOf(samples + lo, n);
-  if (us >= ULTRASONIC_TIMEOUT) return NAN;
+  // Qualitaets-Gate: weniger als die Haelfte gueltige Echos -> keine verlaessliche Messung.
+  if (validCount < SAMPLES / 2) return NAN;
+  // Trimmed median NUR ueber echte Echos. Timeout-Platzhalter sind gar nicht im Pool,
+  // koennen den Median also nicht nach oben ziehen (frueherer Bias-/Fabrikations-Bug).
+  medianOf(valid, validCount);
+  uint8_t lo = validCount / 4;          // unterste 25% (Nahreflexionen) verwerfen
+  uint8_t n  = validCount / 2;          // mittlere 50% verwenden
+  if (n < 1) n = 1;
+  float us = medianOf(valid + lo, n);
   float cm = us / 58.0f;
   if (cm < SENSOR_MIN_CM) return NAN;
   return cm;
@@ -173,6 +184,11 @@ void loadPersist() {
   prefs.end();
 }
 void savePersist() {
+  // Invariante d_leer >= d_voll in JEDEM Kalibrierpfad sicherstellen (auch Capture-Buttons),
+  // sonst rechnet calculateVolume mit vertauschter Referenz.
+  if(!isnan(d_leer) && !isnan(d_voll) && d_voll > d_leer){
+    float t = d_leer; d_leer = d_voll; d_voll = t;
+  }
   prefs.begin("fuell", false);
   prefs.putFloat("leer", d_leer);
   prefs.putFloat("voll", d_voll);
@@ -298,6 +314,9 @@ void pageConfig() {
         + String(staEnabled?"Deaktivieren":"Aktivieren") + "</button></form></div>";
   // Kalibrierung
   pg += "<div class='card'><h2>Kalibrierung</h2>";
+  if (server.arg("err") == "leer" || server.arg("err") == "voll")
+    pg += "<p style='color:red'>&#9888; Messung fehlgeschlagen (kein Echo oder Blindzone) – "
+          "der gespeicherte Wert wurde NICHT ge&auml;ndert. Bei sehr kurzer Distanz bitte manuell eingeben.</p>";
   pg += "Leer: <b>" + (isnan(d_leer) ? String("--") : String(d_leer, 1)) + " cm</b><br>";
   pg += "Voll: <b>" + (isnan(d_voll) ? String("--") : String(d_voll, 1)) + " cm</b><br>";
   pg += "Durchmesser: <b>" + (isnan(diameter) ? String("--") : String(diameter, 1)) + " cm</b><br>";
@@ -357,7 +376,8 @@ void handleStaToggle(){
 
 void handleSetLeer(){
   float d = measureDistance();
-  if(!isnan(d)) d_leer = d;
+  if(isnan(d)){ server.sendHeader("Location", "/config?err=leer"); server.send(303); return; }
+  d_leer = d;
   savePersist();
   server.sendHeader("Location", "/config");
   server.send(303);
@@ -365,7 +385,8 @@ void handleSetLeer(){
 
 void handleSetVoll(){
   float d = measureDistance();
-  if(!isnan(d)) d_voll = d;
+  if(isnan(d)){ server.sendHeader("Location", "/config?err=voll"); server.send(303); return; }
+  d_voll = d;
   savePersist();
   server.sendHeader("Location", "/config");
   server.send(303);
@@ -448,6 +469,11 @@ void handleStatusAPI(){
   json += "\"percent\":" + (isnan(p)? String("null") : String(p,2)) + ",";
   json += "\"analog_output\":" + String(analogOutputEnabled?"true":"false") + ",";
   json += "\"volumen\":" + (isnan(volume)? String("null") : String(volume,2)) + ",";
+  // age_ms = Alter der letzten gueltigen Messung; valid=false signalisiert haengenden Sensor
+  unsigned long age = lastGoodMeasure ? (millis() - lastGoodMeasure) : 0;
+  bool valid = !isnan(d) && lastGoodMeasure && (age <= MEASURE_STALE_MS);
+  json += "\"valid\":" + String(valid?"true":"false") + ",";
+  json += "\"age_ms\":" + String(age) + ",";
   json += "\"timestamp_ms\":" + String(millis());
   json += "}";
   server.send(200, "application/json", json);
@@ -531,7 +557,8 @@ ul,ol{padding-left:1.5rem;}
 <p>Aktivieren Sie <strong>„Publishing"</strong> – dann ist der Füllstand abrufbar unter:</p>
 <pre>http://zisterne.local/api/status</pre>
 <p>Antwort:</p>
-<pre>{"distance_cm":150.5,"percent":75.0,"analog_output":true,"volumen":1250.30,"timestamp_ms":123456789}</pre>
+<pre>{"distance_cm":150.5,"percent":75.0,"analog_output":true,"volumen":1250.30,"valid":true,"age_ms":340,"timestamp_ms":123456789}</pre>
+<p><code>valid:false</code> oder ein gro&szlig;es <code>age_ms</code> bedeutet: Sensor liefert aktuell keine g&uuml;ltige Messung (z.&nbsp;B. abgesteckt).</p>
 <p>Kompatibel mit Home Assistant, ioBroker, Loxone u.&nbsp;a.</p>
 <h4>Analogausgang (0–3,3&nbsp;V an GPIO 25)</h4>
 <p>Aktivieren Sie <strong>„DAC-Ausgabe"</strong>:<br>0&nbsp;V = leer (0&nbsp;%), 3,3&nbsp;V = voll (100&nbsp;%)</p>
@@ -707,11 +734,25 @@ void loop(){
   if(now - lastMeasure >= MEASURE_INTERVAL){
     lastMeasure = now;
     float d = measureDistance();
-    if (!isnan(d)) {
+    // Plausibilitaet: Werte ausserhalb des kalibrierten Bereichs oder physikalisch
+    // unmoegliche Spruenge verwerfen, bevor sie in die EMA einfliessen.
+    bool plausible = !isnan(d);
+    if (plausible && !isnan(d_leer) && !isnan(d_voll)) {
+      float hiB = max(d_leer, d_voll) + 10.0f; // etwas Toleranz ueber "leer"
+      float loB = min(d_leer, d_voll) - 10.0f; // und unter "voll"
+      if (d > hiB || d < loB) plausible = false;
+    }
+    if (plausible && !isnan(lastDist) && fabsf(d - lastDist) > MAX_JUMP_CM)
+      plausible = false; // Zisternenpegel aendert sich nicht meterweise in 2s
+    if (plausible) {
       // EMA α=0.2: glättet Schwankungen, Zisternenpegel ändert sich langsam
       lastDist = isnan(lastDist) ? d : (0.2f * d + 0.8f * lastDist);
       lastPerc = computePercent(lastDist);
       volume   = calculateVolume(lastDist);
+      lastGoodMeasure = now;
+    } else if (lastGoodMeasure && (now - lastGoodMeasure > MEASURE_STALE_MS)) {
+      // Sensor liefert zu lange nichts Brauchbares -> Anzeige nicht einfrieren
+      lastDist = NAN; lastPerc = NAN; volume = NAN;
     }
     Serial.println("---------------------");
     Serial.print("Distance: ");

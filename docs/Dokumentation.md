@@ -1,6 +1,6 @@
 # Zisternenfüllstand – Bedienungsanleitung
 
-**Version 2.7 | Stand: Juni 2026**
+**Version 2.8 | Stand: Juni 2026**
 
 ---
 
@@ -114,9 +114,13 @@ Die Antwort sieht so aus:
   "percent": 75.0,
   "analog_output": true,
   "volumen": 1250.30,
+  "valid": true,
+  "age_ms": 340,
   "timestamp_ms": 123456789
 }
 ```
+
+> **Hinweis:** `valid: false` oder ein großes `age_ms` zeigt an, dass der Sensor aktuell keine gültige Messung liefert (z. B. abgesteckt oder gestört). So erkennt die Hausautomatisierung einen hängenden Sensor.
 
 Diese Schnittstelle können Sie in Home Assistant, ioBroker, Loxone oder ähnliche Systeme einbinden.
 
