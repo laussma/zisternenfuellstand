@@ -32,6 +32,7 @@
 #define SAMPLES 20
 #define ULTRASONIC_TIMEOUT 30000UL // 30ms ~ 5m
 #define SENSOR_MIN_CM      27.0f   // JSN-SR04T Blindzone: unter 27cm keine valide Messung
+#define TRIG_PULSE_US      30      // >10us Spec; laenger = robust gegen verschliffene Flanken (10m-Leitung)
 #define MEASURE_INTERVAL 2000UL    // ms
 #define MAX_JUMP_CM        30.0f   // groesster plausibler Sprung zwischen 2 Messzyklen
 #define MEASURE_STALE_MS   30000UL // ohne gueltige Messung danach Anzeige auf "--" zuruecksetzen
@@ -41,7 +42,7 @@
 #define STA_TIMEOUT 10000UL
 const unsigned long STA_RETRY_INTERVAL = 4*15000UL; // alle 2min prüfen
 const unsigned long AP_GRACE_PERIOD = 10 * 60 * 1000UL; // 10 Minuten
-#define FW_VERSION "2.8"
+#define FW_VERSION "2.9"
 
 // ---------- OTA / Update -----------------------
 #define OTA_ARDUINO_PASS  "zisternenfuellstand"   // Passwort für Arduino-IDE OTA
@@ -151,8 +152,8 @@ float measureDistance() {
   for (uint8_t i = 0; i < SAMPLES; ++i) {
     g_echoReady = false;
     g_echoStart = 0;
-    digitalWrite(PIN_TRIG, LOW);  delayMicroseconds(2);
-    digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(10);
+    digitalWrite(PIN_TRIG, LOW);  delayMicroseconds(4);
+    digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(TRIG_PULSE_US);
     digitalWrite(PIN_TRIG, LOW);
     // Tight-Loop: kein yield() damit WiFi-Tasks keine ISR-Flanke verdecken
     uint32_t deadline = micros() + ULTRASONIC_TIMEOUT;
@@ -162,8 +163,11 @@ float measureDistance() {
     delay(35); // WiFi bekommt Zeit zwischen den Samples
   }
   g_lastValidCount = validCount;
-  // Qualitaets-Gate: weniger als die Haelfte gueltige Echos -> keine verlaessliche Messung.
-  if (validCount < SAMPLES / 2) return NAN;
+  // Qualitaets-Gate: mindestens 5 gueltige Echos. Wenige Echos sind zulaessig,
+  // WEIL das Sparse-Gate unten dann extreme Enge des Clusters verlangt
+  // (schwaches Signal z.B. bei langer Zuleitung liefert nur die staerkste
+  // Reflexion durch = das echte Ziel).
+  if (validCount < 5) return NAN;
   medianOf(valid, validCount); // sortiert in-place (Rueckgabe hier egal)
 
   // Cluster-Schaetzer statt globalem Median:
@@ -203,6 +207,12 @@ float measureDistance() {
   uint8_t sel = 0;
   for (uint8_t c = 0; c < cCount; ++c) if (cLenArr[c] >= need) sel = c; // letztes qualifiziertes = fernstes
   g_lastClusterLen = cLenArr[sel];
+
+  // Sparse-Gate: kleine Cluster (<8 Samples) muessen sehr eng sein (<=6cm Span).
+  // Echte Echos einer ruhigen Oberflaeche streuen <2-3cm; kettenverschmierte
+  // Stoerechos ueberschreiten das deutlich und werden hier verworfen.
+  uint32_t clSpan = valid[cStart[sel] + cLenArr[sel] - 1] - valid[cStart[sel]];
+  if (cLenArr[sel] < 8 && clSpan > 348) return NAN;
 
   float us = medianOf(valid + cStart[sel], cLenArr[sel]); // Median des Gewinner-Clusters
   float cm = us / 58.0f;
@@ -746,6 +756,9 @@ void setup(){
   delay(200);
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
+  // Maximale GPIO-Treiberstaerke (40mA statt 20mA): laedt die Kapazitaet der
+  // langen Trigger-Leitung schneller um -> steilere Flanke am Modul
+  gpio_set_drive_capability((gpio_num_t)PIN_TRIG, GPIO_DRIVE_CAP_3);
   attachInterrupt(digitalPinToInterrupt(PIN_ECHO), echoISR, CHANGE);
   loadPersist();
   loadWifiCreds();
