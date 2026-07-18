@@ -108,6 +108,7 @@ void IRAM_ATTR echoISR() {
 
 uint32_t g_lastSamples[SAMPLES]; // für Debug-Endpoint
 uint8_t  g_lastValidCount = 0;   // gültige Echos im letzten Messzyklus (Debug)
+uint8_t  g_lastClusterLen = 0;   // Größe des Gewinner-Clusters im letzten Zyklus (Debug)
 
 unsigned long lastMeasure = 0;
 unsigned long lastGoodMeasure = 0; // millis der letzten gueltigen Messung (Staleness-Erkennung)
@@ -163,13 +164,47 @@ float measureDistance() {
   g_lastValidCount = validCount;
   // Qualitaets-Gate: weniger als die Haelfte gueltige Echos -> keine verlaessliche Messung.
   if (validCount < SAMPLES / 2) return NAN;
-  // Trimmed median NUR ueber echte Echos. Timeout-Platzhalter sind gar nicht im Pool,
-  // koennen den Median also nicht nach oben ziehen (frueherer Bias-/Fabrikations-Bug).
-  medianOf(valid, validCount);
-  uint8_t lo = validCount / 4;          // unterste 25% (Nahreflexionen) verwerfen
-  uint8_t n  = validCount / 2;          // mittlere 50% verwenden
-  if (n < 1) n = 1;
-  float us = medianOf(valid + lo, n);
+  medianOf(valid, validCount); // sortiert in-place (Rueckgabe hier egal)
+
+  // Cluster-Schaetzer statt globalem Median:
+  // Echte Echos von einer Oberflaeche liegen eng beieinander (wenige cm),
+  // Multipath-/Stoerechos streuen breit und liegen typisch NAEHER als das
+  // Ziel. Ein globaler Median mischt beide Gipfel und "wandert" mit dem
+  // Mischverhaeltnis (beobachtet: 241cm -> 122cm Drift).
+  // Schritt 1: zusammenhaengende Gruppen finden (Nachbar-Gap <= max(5%, 10cm))
+  uint8_t cStart[SAMPLES], cLenArr[SAMPLES], cCount = 0;
+  uint8_t curStart = 0, curLen = 1;
+  for (uint8_t i = 1; i < validCount; ++i) {
+    uint32_t gap = valid[i] - valid[i-1];
+    uint32_t thr = valid[i-1] / 20;              // 5% relativ ...
+    if (thr < 580) thr = 580;                    // ... mindestens 10cm (580us)
+    if (gap <= thr) {
+      curLen++;
+    } else {
+      cStart[cCount] = curStart; cLenArr[cCount] = curLen; cCount++;
+      curStart = i; curLen = 1;
+    }
+  }
+  cStart[cCount] = curStart; cLenArr[cCount] = curLen; cCount++;
+
+  uint8_t bestLen = 0;
+  for (uint8_t c = 0; c < cCount; ++c) if (cLenArr[c] > bestLen) bestLen = cLenArr[c];
+  g_lastClusterLen = bestLen;
+  // Kein dominantes Cluster (alles verstreut) -> keine vertrauenswuerdige Messung
+  if (bestLen < 4) return NAN;
+
+  // Schritt 2 (an realen Messreihen verifiziert): unter allen Clustern mit
+  // Laenge >= 3/4 des groessten gewinnt das FERNSTE. Grund: Stoerbaender
+  // haben oft 1-2 Samples mehr als das echte Ziel, liegen aber naeher und
+  // breiter. Reines "groesstes Cluster" lieferte auf realen Daten 165cm
+  // statt 241cm; diese Regel trifft beide realen Sets korrekt.
+  uint8_t need = bestLen - bestLen / 4;
+  if (need < 4) need = 4;
+  uint8_t sel = 0;
+  for (uint8_t c = 0; c < cCount; ++c) if (cLenArr[c] >= need) sel = c; // letztes qualifiziertes = fernstes
+  g_lastClusterLen = cLenArr[sel];
+
+  float us = medianOf(valid + cStart[sel], cLenArr[sel]); // Median des Gewinner-Clusters
   float cm = us / 58.0f;
   if (cm < SENSOR_MIN_CM) return NAN;
   return cm;
@@ -458,6 +493,7 @@ void handleDebug(){
   j += ",\"isr_rejected_short\":" + String(g_isrRejected);
   j += ",\"last_rejected_us\":" + String(g_lastRejectedUs);
   j += ",\"valid_count\":" + String(g_lastValidCount) + ",\"samples_total\":" + String(SAMPLES);
+  j += ",\"cluster_size\":" + String(g_lastClusterLen);
   j += ",\"echo_pin_level\":" + String(digitalRead(PIN_ECHO));
   j += ",\"last_good_age_ms\":" + String(lastGoodMeasure ? (millis() - lastGoodMeasure) : 0);
   j += ",\"fw\":\"" FW_VERSION "\"";
