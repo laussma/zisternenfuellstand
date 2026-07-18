@@ -75,26 +75,39 @@ bool mdnsStarted = false;
 volatile uint32_t g_echoStart = 0;
 volatile uint32_t g_echoDur   = 0;
 volatile bool     g_echoReady = false;
+// Debug-Zähler: unterscheiden "keine Flanken" (Verkabelung/Versorgung) von
+// "Flanken da, aber als Störpulse verworfen" (Blindzone/Resonanz)
+volatile uint32_t g_isrRising   = 0;  // steigende Flanken gesamt
+volatile uint32_t g_isrFalling  = 0;  // fallende Flanken gesamt
+volatile uint32_t g_isrRejected = 0;  // zu kurze Pulse (< Blindzone) verworfen
+volatile uint32_t g_lastRejectedUs = 0; // Dauer des letzten verworfenen Pulses
 
 void IRAM_ATTR echoISR() {
   if (REG_READ(GPIO_IN_REG) & (1UL << PIN_ECHO)) {
+    g_isrRising++;
     g_echoStart = micros();
     g_echoReady = false;
-  } else if (g_echoStart > 0) {
-    uint32_t dur = micros() - g_echoStart;
-    // Nur Pulse >= Blindzone akzeptieren (filtert Störflanken)
-    if (dur >= (uint32_t)(SENSOR_MIN_CM * 58UL)) {
-      g_echoDur   = dur;
-      g_echoReady = true;
-    }
-    // Zu kurze Pulse: g_echoStart reset damit nächste Flanke neu startet
-    else {
-      g_echoStart = 0;
+  } else {
+    g_isrFalling++;
+    if (g_echoStart > 0) {
+      uint32_t dur = micros() - g_echoStart;
+      // Nur Pulse >= Blindzone akzeptieren (filtert Störflanken)
+      if (dur >= (uint32_t)(SENSOR_MIN_CM * 58UL)) {
+        g_echoDur   = dur;
+        g_echoReady = true;
+      }
+      // Zu kurze Pulse: g_echoStart reset damit nächste Flanke neu startet
+      else {
+        g_isrRejected++;
+        g_lastRejectedUs = dur;
+        g_echoStart = 0;
+      }
     }
   }
 }
 
 uint32_t g_lastSamples[SAMPLES]; // für Debug-Endpoint
+uint8_t  g_lastValidCount = 0;   // gültige Echos im letzten Messzyklus (Debug)
 
 unsigned long lastMeasure = 0;
 unsigned long lastGoodMeasure = 0; // millis der letzten gueltigen Messung (Staleness-Erkennung)
@@ -147,6 +160,7 @@ float measureDistance() {
     if (g_echoReady) valid[validCount++] = g_echoDur;                // nur echte Echos in den Pool
     delay(35); // WiFi bekommt Zeit zwischen den Samples
   }
+  g_lastValidCount = validCount;
   // Qualitaets-Gate: weniger als die Haelfte gueltige Echos -> keine verlaessliche Messung.
   if (validCount < SAMPLES / 2) return NAN;
   // Trimmed median NUR ueber echte Echos. Timeout-Platzhalter sind gar nicht im Pool,
@@ -438,6 +452,15 @@ void handleDebug(){
   j += "],\"computed_cm\":" + (isnan(lastDist) ? String("null") : String(lastDist,2));
   j += ",\"sensor_min_cm\":" + String(SENSOR_MIN_CM,0);
   j += ",\"timeout_us\":" + String(ULTRASONIC_TIMEOUT);
+  // ISR-Diagnose: keine Flanken = Verkabelung/Versorgung; nur rejected = Blindzone/Resonanz
+  j += ",\"isr_rising\":" + String(g_isrRising);
+  j += ",\"isr_falling\":" + String(g_isrFalling);
+  j += ",\"isr_rejected_short\":" + String(g_isrRejected);
+  j += ",\"last_rejected_us\":" + String(g_lastRejectedUs);
+  j += ",\"valid_count\":" + String(g_lastValidCount) + ",\"samples_total\":" + String(SAMPLES);
+  j += ",\"echo_pin_level\":" + String(digitalRead(PIN_ECHO));
+  j += ",\"last_good_age_ms\":" + String(lastGoodMeasure ? (millis() - lastGoodMeasure) : 0);
+  j += ",\"fw\":\"" FW_VERSION "\"";
   j += "}";
   server.send(200, "application/json", j);
 }
