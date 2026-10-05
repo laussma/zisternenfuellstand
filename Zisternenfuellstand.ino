@@ -42,7 +42,7 @@
 #define STA_TIMEOUT 10000UL
 const unsigned long STA_RETRY_INTERVAL = 4*15000UL; // alle 2min prüfen
 const unsigned long AP_GRACE_PERIOD = 10 * 60 * 1000UL; // 10 Minuten
-#define FW_VERSION "2.9"
+#define FW_VERSION "2.10"
 
 // ---------- OTA / Update -----------------------
 #define OTA_ARDUINO_PASS  "zisternenfuellstand"   // Passwort für Arduino-IDE OTA
@@ -281,11 +281,35 @@ void startAP() {
   Serial.println("[AP] gestartet: " + String(AP_SSID) + " IP: " + WiFi.softAPIP().toString());
 }
 
+// SSID als Hex ausgeben – macht unsichtbare/abweichende Zeichen sichtbar
+void printHex(const String &s) {
+  for (size_t i = 0; i < s.length(); i++) Serial.printf("%02X ", (uint8_t)s[i]);
+  Serial.println();
+}
+
+// Diagnose bei "SSID nicht verfügbar": zeigt, welche Netze der ESP32 wirklich sieht
+void scanDiag() {
+  Serial.print("[SCAN] Gesuchte SSID '" + sta_ssid + "' hex: ");
+  printHex(sta_ssid);
+  int n = WiFi.scanNetworks(false, true); // blockierend, inkl. versteckter Netze
+  if (n < 0) { Serial.println("[SCAN] fehlgeschlagen (" + String(n) + ")"); return; }
+  Serial.println("[SCAN] " + String(n) + " Netze gefunden:");
+  for (int i = 0; i < n; i++) {
+    String ssid = WiFi.SSID(i);
+    Serial.printf("[SCAN] %s ch%2d %4ddBm auth%d '%s' hex: ",
+                  ssid == sta_ssid ? "**" : "  ", WiFi.channel(i), WiFi.RSSI(i),
+                  (int)WiFi.encryptionType(i), ssid.c_str());
+    printHex(ssid);
+  }
+  WiFi.scanDelete();
+}
+
 void connectSTA() {
   if (!staEnabled || !sta_ssid.length()) return;
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setAutoReconnect(false); // Reconnect macht loop() – sonst Kollision mit begin() ("sta is connecting")
   WiFi.disconnect(false, false); // nur STA trennen, AP bleibt
-  delay(50);
+  delay(200);
   Serial.println("[STA] Starte Verbindung zu '" + sta_ssid + "' …");
   WiFi.begin(sta_ssid.c_str(), sta_pass.c_str());
   // nicht blockierend – loop() erkennt WL_CONNECTED und richtet mDNS ein
@@ -412,6 +436,7 @@ void pageConfig() {
 void handleWifi(){
   if(server.hasArg("ssid") && server.hasArg("pass")){
     sta_ssid = server.arg("ssid");
+    sta_ssid.trim();
     sta_pass = server.arg("pass");
     saveWifiCreds();
     connectSTA();
@@ -875,7 +900,12 @@ void loop(){
   if (now - lastSTAcheck >= STA_RETRY_INTERVAL) {
     lastSTAcheck = now;
     if (staEnabled && WiFi.status() != WL_CONNECTED) {
-      Serial.println("[STA] Nicht verbunden – neuer Versuch.");
+      Serial.println("[STA] Nicht verbunden (Status " + String(WiFi.status()) + ") – neuer Versuch.");
+      if (WiFi.status() == WL_NO_SSID_AVAIL) {
+        WiFi.disconnect(false, false);
+        delay(200);
+        scanDiag();
+      }
       connectSTA();
     }
   }
