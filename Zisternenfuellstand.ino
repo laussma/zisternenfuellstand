@@ -32,6 +32,11 @@
 #define SAMPLES 20
 #define ULTRASONIC_TIMEOUT 30000UL // 30ms ~ 5m
 #define SENSOR_MIN_CM      27.0f   // JSN-SR04T Blindzone: unter 27cm keine valide Messung
+#define PING_PERIOD_MS     70UL    // min. Abstand Trigger->Trigger (JSN-Spec >=60ms; schneller -> Modul kann haengen)
+#define ECHO_BUSY_MAX_MS   70UL    // max. Warten bis ein laufender Echo-Puls endet, bevor neu getriggert wird
+#define SENSOR_RECOVER_MS  60000UL // so lange 0 gueltige Echos -> Recovery-Pause
+#define SENSOR_PAUSE_MS    10000UL // erste Recovery-Pause, verdoppelt sich bis SENSOR_PAUSE_MAX
+#define SENSOR_PAUSE_MAX   300000UL
 #define TRIG_PULSE_US      30      // >10us Spec; laenger = robust gegen verschliffene Flanken (10m-Leitung)
 #define MEASURE_INTERVAL 2000UL    // ms
 #define MAX_JUMP_CM        30.0f   // groesster plausibler Sprung zwischen 2 Messzyklen
@@ -42,7 +47,7 @@
 #define STA_TIMEOUT 10000UL
 const unsigned long STA_RETRY_INTERVAL = 4*15000UL; // alle 2min prüfen
 const unsigned long AP_GRACE_PERIOD = 10 * 60 * 1000UL; // 10 Minuten
-#define FW_VERSION "2.10"
+#define FW_VERSION "2.11"
 
 // ---------- OTA / Update -----------------------
 #define OTA_ARDUINO_PASS  "zisternenfuellstand"   // Passwort für Arduino-IDE OTA
@@ -82,14 +87,26 @@ volatile uint32_t g_isrRising   = 0;  // steigende Flanken gesamt
 volatile uint32_t g_isrFalling  = 0;  // fallende Flanken gesamt
 volatile uint32_t g_isrRejected = 0;  // zu kurze Pulse (< Blindzone) verworfen
 volatile uint32_t g_lastRejectedUs = 0; // Dauer des letzten verworfenen Pulses
+// Pulsdiagnose unabhaengig vom Messzyklus (g_echoStart wird pro Ping genullt)
+volatile uint32_t g_riseUs      = 0;
+volatile uint32_t g_lastPulseUs = 0;  // Dauer des letzten Pulses, auch > Timeout
+volatile uint32_t g_maxPulseUs  = 0;
+volatile uint32_t g_isrLong     = 0;  // Pulse > Timeout = "kein Echo gehoert" des JSN
 
 void IRAM_ATTR echoISR() {
   if (REG_READ(GPIO_IN_REG) & (1UL << PIN_ECHO)) {
     g_isrRising++;
     g_echoStart = micros();
+    g_riseUs = g_echoStart;
     g_echoReady = false;
   } else {
     g_isrFalling++;
+    if (g_riseUs) {
+      uint32_t p = micros() - g_riseUs;
+      g_lastPulseUs = p;
+      if (p > g_maxPulseUs) g_maxPulseUs = p;
+      if (p > ULTRASONIC_TIMEOUT) g_isrLong++;
+    }
     if (g_echoStart > 0) {
       uint32_t dur = micros() - g_echoStart;
       // Nur Pulse >= Blindzone akzeptieren (filtert Störflanken)
@@ -113,6 +130,13 @@ uint8_t  g_lastClusterLen = 0;   // Größe des Gewinner-Clusters im letzten Zyk
 
 unsigned long lastMeasure = 0;
 unsigned long lastGoodMeasure = 0; // millis der letzten gueltigen Messung (Staleness-Erkennung)
+// Sensor-Recovery: JSN-SR04T kann in "hoert nichts" haengen bleiben (nur lange
+// Kein-Echo-Pulse). Ohne Stromabschaltung bleibt nur: Triggern pausieren.
+unsigned long lastEchoSeen = 0;      // letzter Zyklus mit >=1 gueltigem Echo
+unsigned long sensorPauseUntil = 0;
+uint8_t  g_recoverLevel = 0;         // aktuelle Eskalationsstufe der Pause
+uint32_t g_recoveries   = 0;         // gestartete Recovery-Pausen
+uint32_t g_recoverOk    = 0;         // davon danach wieder Echos
 unsigned long lastSTAcheck = 0;
 unsigned long apExpires = 0; // Timestamp bis wann AP garantiert an ist
 unsigned long lastOTACheck = 0;
@@ -150,6 +174,10 @@ float measureDistance() {
   uint32_t valid[SAMPLES];   // nur erfolgreich gemessene Echos
   uint8_t  validCount = 0;
   for (uint8_t i = 0; i < SAMPLES; ++i) {
+    // Nicht in einen laufenden (Kein-Echo-)Puls hinein triggern
+    unsigned long w0 = millis();
+    while (digitalRead(PIN_ECHO) && millis() - w0 < ECHO_BUSY_MAX_MS) delay(1);
+    unsigned long trigMs = millis();
     g_echoReady = false;
     g_echoStart = 0;
     digitalWrite(PIN_TRIG, LOW);  delayMicroseconds(4);
@@ -160,7 +188,8 @@ float measureDistance() {
     while (!g_echoReady && (int32_t)(micros() - deadline) < 0) { /* busy wait */ }
     g_lastSamples[i] = g_echoReady ? g_echoDur : ULTRASONIC_TIMEOUT; // Debug: roh inkl. Timeouts
     if (g_echoReady) valid[validCount++] = g_echoDur;                // nur echte Echos in den Pool
-    delay(35); // WiFi bekommt Zeit zwischen den Samples
+    unsigned long el = millis() - trigMs; // Mindestperiode einhalten, WiFi bekommt Zeit
+    delay(el < PING_PERIOD_MS ? PING_PERIOD_MS - el : 1);
   }
   g_lastValidCount = validCount;
   // Qualitaets-Gate: mindestens 5 gueltige Echos. Wenige Echos sind zulaessig,
@@ -531,6 +560,15 @@ void handleDebug(){
   j += ",\"cluster_size\":" + String(g_lastClusterLen);
   j += ",\"echo_pin_level\":" + String(digitalRead(PIN_ECHO));
   j += ",\"last_good_age_ms\":" + String(lastGoodMeasure ? (millis() - lastGoodMeasure) : 0);
+  j += ",\"isr_long_pulses\":" + String(g_isrLong);
+  j += ",\"last_pulse_us\":" + String(g_lastPulseUs);
+  j += ",\"max_pulse_us\":" + String(g_maxPulseUs);
+  j += ",\"recoveries\":" + String(g_recoveries);
+  j += ",\"recover_ok\":" + String(g_recoverOk);
+  j += ",\"recover_level\":" + String(g_recoverLevel);
+  long pl = (long)(sensorPauseUntil - millis());
+  j += ",\"sensor_pause_ms\":" + String(pl > 0 ? pl : 0);
+  j += ",\"uptime_ms\":" + String(millis());
   j += ",\"fw\":\"" FW_VERSION "\"";
   j += "}";
   server.send(200, "application/json", j);
@@ -828,9 +866,27 @@ void loop(){
   ArduinoOTA.handle();
   unsigned long now = millis();
   // Messung
-  if(now - lastMeasure >= MEASURE_INTERVAL){
+  bool sensorPaused = (long)(sensorPauseUntil - now) > 0;
+  if(!sensorPaused && now - lastMeasure >= MEASURE_INTERVAL){
     lastMeasure = now;
     float d = measureDistance();
+    if (g_lastValidCount > 0) {
+      if (g_recoverLevel) {
+        g_recoverOk++;
+        Serial.println("[SENSOR] Recovery erfolgreich nach Stufe " + String(g_recoverLevel));
+      }
+      g_recoverLevel = 0;
+      lastEchoSeen = now;
+    } else if ((long)(now - lastEchoSeen) > (long)SENSOR_RECOVER_MS) {
+      unsigned long pause = SENSOR_PAUSE_MS << g_recoverLevel;
+      if (pause > SENSOR_PAUSE_MAX) pause = SENSOR_PAUSE_MAX;
+      if (g_recoverLevel < 6) g_recoverLevel++;
+      g_recoveries++;
+      digitalWrite(PIN_TRIG, LOW);
+      sensorPauseUntil = now + pause;
+      lastEchoSeen = sensorPauseUntil; // nach der Pause wieder volles Fenster
+      Serial.println("[SENSOR] Keine Echos seit " + String(SENSOR_RECOVER_MS/1000) + "s – Trigger-Pause " + String(pause/1000) + "s");
+    }
     // Plausibilitaet: Werte ausserhalb des kalibrierten Bereichs oder physikalisch
     // unmoegliche Spruenge verwerfen, bevor sie in die EMA einfliessen.
     bool plausible = !isnan(d);
