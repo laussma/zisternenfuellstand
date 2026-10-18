@@ -47,7 +47,7 @@
 #define STA_TIMEOUT 10000UL
 const unsigned long STA_RETRY_INTERVAL = 4*15000UL; // alle 2min prüfen
 const unsigned long AP_GRACE_PERIOD = 10 * 60 * 1000UL; // 10 Minuten
-#define FW_VERSION "2.11"
+#define FW_VERSION "2.12"
 
 // ---------- OTA / Update -----------------------
 #define OTA_ARDUINO_PASS  "zisternenfuellstand"   // Passwort für Arduino-IDE OTA
@@ -56,6 +56,7 @@ const unsigned long AP_GRACE_PERIOD = 10 * 60 * 1000UL; // 10 Minuten
 #define OTA_VERSION_URL   "https://github.com/laussma/zisternenfuellstand/releases/latest/download/version.txt"
 #define OTA_FIRMWARE_URL  "https://github.com/laussma/zisternenfuellstand/releases/latest/download/firmware.bin"
 #define OTA_CHECK_INTERVAL (3600000UL) // Alle 60 Minuten auf Updates prüfen
+#define OTA_FIRST_CHECK    (120000UL)  // erste Prüfung 2 Minuten nach Start
 
 // ---------- Hardware für analogen Ausgang --------
 #define DAC_PIN 25 // GPIO25 = DAC1 auf ESP32
@@ -752,12 +753,16 @@ void checkAndApplyOTA() {
     if (remote.length() > 0 && remote != FW_VERSION) {
       Serial.println("[AutoOTA] Neue Version verfügbar – starte Update...");
       http.end();
+      client.stop(); // TLS-Puffer der Versionsabfrage freigeben, bevor die zweite TLS-Verbindung startet
       WiFiClientSecure uc;
       uc.setInsecure();
       httpUpdate.rebootOnUpdate(true);
+      // GitHub leitet .../latest/download/firmware.bin per 302 weiter; HTTPUpdate
+      // folgt Redirects standardmaessig NICHT -> ohne das schlaegt jedes Update fehl
+      httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
       t_httpUpdate_return ret = httpUpdate.update(uc, OTA_FIRMWARE_URL);
       if (ret == HTTP_UPDATE_FAILED) {
-        Serial.println("[AutoOTA] Fehler: " + httpUpdate.getLastErrorString());
+        Serial.println("[AutoOTA] Fehler " + String(httpUpdate.getLastError()) + ": " + httpUpdate.getLastErrorString());
       }
       return;
     } else {
@@ -989,7 +994,7 @@ void loop(){
   }
 
   // Automatische Update-Prüfung
-  if (autoUpdateEnabled && WiFi.status() == WL_CONNECTED && now - lastOTACheck >= OTA_CHECK_INTERVAL) {
+  if (autoUpdateEnabled && WiFi.status() == WL_CONNECTED && now - lastOTACheck >= (lastOTACheck ? OTA_CHECK_INTERVAL : OTA_FIRST_CHECK)) {
     lastOTACheck = now;
     checkAndApplyOTA();
   }
