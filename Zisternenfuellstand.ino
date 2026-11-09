@@ -37,6 +37,7 @@
 #define SENSOR_RECOVER_MS  60000UL // so lange 0 gueltige Echos -> Recovery-Pause
 #define SENSOR_PAUSE_MS    10000UL // erste Recovery-Pause, verdoppelt sich bis SENSOR_PAUSE_MAX
 #define SENSOR_PAUSE_MAX   300000UL
+#define NEAR_ECHO_MIN      20      // so viele Kurz-Pulse im Fenster = Sensor antwortet, nur im Nahbereich (Kondensat) -> keine Pause
 #define TRIG_PULSE_US      30      // >10us Spec; laenger = robust gegen verschliffene Flanken (10m-Leitung)
 #define MEASURE_INTERVAL 2000UL    // ms
 #define MAX_JUMP_CM        30.0f   // groesster plausibler Sprung zwischen 2 Messzyklen
@@ -47,7 +48,7 @@
 #define STA_TIMEOUT 10000UL
 const unsigned long STA_RETRY_INTERVAL = 4*15000UL; // alle 2min prüfen
 const unsigned long AP_GRACE_PERIOD = 10 * 60 * 1000UL; // 10 Minuten
-#define FW_VERSION "2.12"
+#define FW_VERSION "2.13"
 
 // ---------- OTA / Update -----------------------
 #define OTA_ARDUINO_PASS  "zisternenfuellstand"   // Passwort für Arduino-IDE OTA
@@ -107,6 +108,7 @@ void IRAM_ATTR echoISR() {
       g_lastPulseUs = p;
       if (p > g_maxPulseUs) g_maxPulseUs = p;
       if (p > ULTRASONIC_TIMEOUT) g_isrLong++;
+      g_riseUs = 0; // fallende Flanke ohne steigende nicht gegen alten Startwert messen
     }
     if (g_echoStart > 0) {
       uint32_t dur = micros() - g_echoStart;
@@ -138,6 +140,9 @@ unsigned long sensorPauseUntil = 0;
 uint8_t  g_recoverLevel = 0;         // aktuelle Eskalationsstufe der Pause
 uint32_t g_recoveries   = 0;         // gestartete Recovery-Pausen
 uint32_t g_recoverOk    = 0;         // davon danach wieder Echos
+uint32_t rejAtWindow    = 0;         // g_isrRejected zu Beginn des Recovery-Fensters
+uint32_t g_nearEchoWindows = 0;      // 60s-Fenster nur mit Nahbereichs-Echos (Kondensat/Nachschwingen)
+bool     g_nearEchoActive  = false;
 unsigned long lastSTAcheck = 0;
 unsigned long apExpires = 0; // Timestamp bis wann AP garantiert an ist
 unsigned long lastOTACheck = 0;
@@ -569,6 +574,8 @@ void handleDebug(){
   j += ",\"recover_level\":" + String(g_recoverLevel);
   long pl = (long)(sensorPauseUntil - millis());
   j += ",\"sensor_pause_ms\":" + String(pl > 0 ? pl : 0);
+  j += ",\"near_echo_windows\":" + String(g_nearEchoWindows);
+  j += ",\"near_echo_active\":" + String(g_nearEchoActive ? "true" : "false");
   j += ",\"uptime_ms\":" + String(millis());
   j += ",\"fw\":\"" FW_VERSION "\"";
   j += "}";
@@ -737,6 +744,13 @@ void handleAutoUpdateToggle(){
   server.send(303);
 }
 
+// "2.13" -> 2013; nur so ist 2.13 > 2.9 (String-Vergleich waere falsch)
+long versionNum(const String &v) {
+  int dot = v.indexOf('.');
+  if (dot < 0) return v.toInt() * 1000L;
+  return v.substring(0, dot).toInt() * 1000L + v.substring(dot + 1).toInt();
+}
+
 void checkAndApplyOTA() {
   if (WiFi.status() != WL_CONNECTED) return;
   Serial.println("[AutoOTA] Prüfe auf neue Firmware...");
@@ -750,7 +764,7 @@ void checkAndApplyOTA() {
     String remote = http.getString();
     remote.trim();
     Serial.println("[AutoOTA] Remote: " + remote + " | Lokal: " FW_VERSION);
-    if (remote.length() > 0 && remote != FW_VERSION) {
+    if (remote.length() > 0 && versionNum(remote) > versionNum(FW_VERSION)) {
       Serial.println("[AutoOTA] Neue Version verfügbar – starte Update...");
       http.end();
       client.stop(); // TLS-Puffer der Versionsabfrage freigeben, bevor die zweite TLS-Verbindung startet
@@ -881,7 +895,18 @@ void loop(){
         Serial.println("[SENSOR] Recovery erfolgreich nach Stufe " + String(g_recoverLevel));
       }
       g_recoverLevel = 0;
+      g_nearEchoActive = false;
       lastEchoSeen = now;
+      rejAtWindow = g_isrRejected;
+    } else if ((long)(now - lastEchoSeen) > (long)SENSOR_RECOVER_MS &&
+               g_isrRejected - rejAtWindow >= NEAR_ECHO_MIN) {
+      // Sensor antwortet, sieht aber nur etwas unter der Blindzone (Kondensat auf
+      // der Membran). Pausieren hilft hier nicht und verzoegert nur die Rueckkehr.
+      g_nearEchoWindows++;
+      g_nearEchoActive = true;
+      Serial.println("[SENSOR] Nur Nahbereichs-Echos (" + String(g_lastRejectedUs / 58) + "cm) – Kondensat am Messkopf?");
+      lastEchoSeen = now;
+      rejAtWindow = g_isrRejected;
     } else if ((long)(now - lastEchoSeen) > (long)SENSOR_RECOVER_MS) {
       unsigned long pause = SENSOR_PAUSE_MS << g_recoverLevel;
       if (pause > SENSOR_PAUSE_MAX) pause = SENSOR_PAUSE_MAX;
@@ -890,6 +915,7 @@ void loop(){
       digitalWrite(PIN_TRIG, LOW);
       sensorPauseUntil = now + pause;
       lastEchoSeen = sensorPauseUntil; // nach der Pause wieder volles Fenster
+      rejAtWindow = g_isrRejected;
       Serial.println("[SENSOR] Keine Echos seit " + String(SENSOR_RECOVER_MS/1000) + "s – Trigger-Pause " + String(pause/1000) + "s");
     }
     // Plausibilitaet: Werte ausserhalb des kalibrierten Bereichs oder physikalisch
