@@ -10,7 +10,7 @@ on:
 jobs:
   build:
     name: Compile Firmware
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest = 26.04 hat kein wkhtmltopdf mehr
 
     steps:
       - name: Checkout Code
@@ -37,6 +37,7 @@ jobs:
             ./sketch/Zisternenfuellstand
 
       - name: Build PDF documentation
+        continue-on-error: true   # Doku darf das Firmware-Release nie blockieren
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --fix-missing pandoc wkhtmltopdf xvfb
@@ -70,7 +71,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest = 26.04 hat kein wkhtmltopdf mehr
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write   # noetig damit GITHUB_TOKEN ein Release anlegen darf (sonst 403)
